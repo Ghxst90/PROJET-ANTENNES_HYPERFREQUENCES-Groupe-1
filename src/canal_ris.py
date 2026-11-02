@@ -32,7 +32,37 @@ def positions_elements(centre, n_x, n_y, pas):
     Le panneau est vertical, dans le plan x = centre[0] : y varie avec n_x, z avec n_y.
     Les éléments sont centrés autour de `centre`.
     """
-    raise NotImplementedError("À écrire par Tsala")
+    centre = np.asarray(centre, dtype=float)
+    # décalages centrés sur 0 : pour n éléments, de -(n-1)/2*pas à +(n-1)/2*pas
+    dy = (np.arange(n_x) - (n_x - 1) / 2) * pas
+    dz = (np.arange(n_y) - (n_y - 1) / 2) * pas
+    grille_y, grille_z = np.meshgrid(dy, dz, indexing="ij")
+    positions = np.empty((n_x * n_y, 3))
+    positions[:, 0] = centre[0]                      # plan x = constante
+    positions[:, 1] = centre[1] + grille_y.ravel()
+    positions[:, 2] = centre[2] + grille_z.ravel()
+    return positions
+
+
+def _canal_vers_elements(pos_point, pos_elements, f_hz):
+    """Canal en espace libre entre un point (BS ou UE) et chaque élément du RIS.
+
+    Entrées : pos_point (numpy (x, y, z)), pos_elements (N, 3), f_hz (Hz)
+    Sortie  : vecteur complexe de taille N
+        coef[n] = 10**(-PL(d_n)/20) * exp(-1j * 2*pi * d_n / lambda)
+    """
+    d = np.linalg.norm(pos_elements - np.asarray(pos_point, dtype=float), axis=1)
+    longueur_onde = config.C / f_hz
+    try:
+        # essai en une seule fois (rapide) si perte_espace_libre accepte un tableau
+        pertes_db = np.asarray(perte_espace_libre(f_hz, d), dtype=float)
+        if pertes_db.shape != d.shape:
+            raise ValueError("perte_espace_libre n'a pas renvoye un tableau")
+    except (TypeError, ValueError):
+        # sinon, un appel par élément (plus lent mais toujours correct)
+        pertes_db = np.array([perte_espace_libre(f_hz, dn) for dn in d], dtype=float)
+    amplitude = 10 ** (-pertes_db / 20)
+    return amplitude * np.exp(-1j * 2 * np.pi * d / longueur_onde)
 
 
 def canal_bs_ris(pos_bs, pos_elements, f_hz):
@@ -44,7 +74,7 @@ def canal_bs_ris(pos_bs, pos_elements, f_hz):
     Pour chaque élément n, avec d_n la distance BS-élément :
         g[n] = 10**(-PL(d_n)/20) * exp(-1j * 2*pi * d_n / lambda)
     """
-    raise NotImplementedError("À écrire par Tsala")
+    return _canal_vers_elements(pos_bs, pos_elements, f_hz)
 
 
 def canal_ris_ue(pos_elements, pos_ue, f_hz):
@@ -53,7 +83,7 @@ def canal_ris_ue(pos_elements, pos_ue, f_hz):
     Entrées : pos_elements (N, 3), pos_ue (numpy (x, y, z)), f_hz (Hz)
     Sortie  : vecteur complexe h_r de taille N
     """
-    raise NotImplementedError("À écrire par Tsala")
+    return _canal_vers_elements(pos_ue, pos_elements, f_hz)
 
 
 def matrice_reflexion(phases, amplitude=config.AMPLITUDE_RIS):
@@ -62,7 +92,7 @@ def matrice_reflexion(phases, amplitude=config.AMPLITUDE_RIS):
     Entrées : phases (vecteur de N angles en rad), amplitude (module beta, 1 par défaut)
     Sortie  : matrice diagonale N x N, Theta[n, n] = amplitude * exp(1j * phases[n])
     """
-    raise NotImplementedError("À écrire par Tsala")
+    return np.diag(amplitude * np.exp(1j * np.asarray(phases, dtype=float)))
 
 
 def canal_total(h_d, h_r, g, phases, amplitude=config.AMPLITUDE_RIS):
@@ -73,4 +103,9 @@ def canal_total(h_d, h_r, g, phases, amplitude=config.AMPLITUDE_RIS):
     Sortie  : nombre complexe
         h = h_d + somme_n [ h_r[n] * amplitude * exp(1j*phases[n]) * g[n] ]
     """
-    raise NotImplementedError("À écrire par Tsala")
+    # Theta est diagonale : le produit h_r^T . Theta . g se réduit à une somme terme à terme
+    # (même résultat que la multiplication matricielle, sans construire la matrice N x N)
+    theta = amplitude * np.exp(1j * np.asarray(phases, dtype=float))
+    return h_d + np.sum(h_r * theta * g)
+
+
