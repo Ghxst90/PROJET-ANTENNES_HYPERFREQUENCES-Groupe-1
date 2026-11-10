@@ -19,7 +19,7 @@ def perte_espace_libre(f_hz, d_m):
     Formule : PL = 20 * log10(4 * pi * d * f / c)
     Vérification : environ 64 dB à 1 m pour 39 GHz (voir tests/test_canal_direct.py).
     """
-    raise NotImplementedError("À écrire par Aroung")
+    return 20 * np.log10(4 * np.pi * d_m * f_hz / config.C)
 
 
 def est_bloque(pos_bs, pos_ue, obstacles):
@@ -33,7 +33,35 @@ def est_bloque(pos_bs, pos_ue, obstacles):
     Piste : tester l'intersection d'un segment avec un rectangle (méthode
     de Liang-Barsky), ou échantillonner des points le long du segment.
     """
-    raise NotImplementedError("À écrire par Aroung")
+    # Méthode de Liang-Barsky : on découpe le segment BS-UE (vu de dessus) par chaque rectangle.
+    x0, y0 = pos_bs[0], pos_bs[1]
+    dx = pos_ue[0] - x0
+    dy = pos_ue[1] - y0
+    for (x_min, x_max, y_min, y_max) in obstacles:
+        t_entree, t_sortie = 0.0, 1.0      # paramètre t le long du segment (0 = BS, 1 = UE)
+        traverse = True
+        # Pour chaque bord du rectangle : (p, q) tels que le point est dedans si p*t <= q
+        for p, q in ((-dx, x0 - x_min), (dx, x_max - x0),
+                     (-dy, y0 - y_min), (dy, y_max - y0)):
+            if p == 0:                      # segment parallèle à ce bord
+                if q < 0:                   # et à l'extérieur du rectangle
+                    traverse = False
+                    break
+            else:
+                r = q / p
+                if p < 0:                   # le segment entre par ce bord
+                    if r > t_sortie:
+                        traverse = False
+                        break
+                    t_entree = max(t_entree, r)
+                else:                       # le segment sort par ce bord
+                    if r < t_entree:
+                        traverse = False
+                        break
+                    t_sortie = min(t_sortie, r)
+        if traverse:
+            return True
+    return False
 
 
 def attenuation_blocage(bloque, valeur_db=config.ATTENUATION_BLOCAGE_DB):
@@ -42,7 +70,7 @@ def attenuation_blocage(bloque, valeur_db=config.ATTENUATION_BLOCAGE_DB):
     Entrées : bloque (bool), valeur_db (dB, réglable)
     Sortie  : valeur_db si bloque, 0.0 sinon
     """
-    raise NotImplementedError("À écrire par Aroung")
+    return valeur_db if bloque else 0.0
 
 
 def canal_direct(pos_bs, pos_ue, f_hz, obstacles):
@@ -57,4 +85,18 @@ def canal_direct(pos_bs, pos_ue, f_hz, obstacles):
         h_d = 10**(-PL/20) * exp(-1j * 2*pi * d / lambda)
     Le module donne l'amplitude, l'exponentielle donne la phase de propagation.
     """
-    raise NotImplementedError("À écrire par Aroung")
+    d = np.linalg.norm(np.asarray(pos_ue) - np.asarray(pos_bs))
+    perte_db = perte_espace_libre(f_hz, d) + attenuation_blocage(est_bloque(pos_bs, pos_ue, obstacles))
+    amplitude = 10 ** (-perte_db / 20)                 # amplitude linéaire (pas en dB)
+    phase = -2 * np.pi * d / config.LAMBDA             # phase de propagation
+    return amplitude * np.exp(1j * phase)
+
+
+def canal_direct_grille(pos_bs, positions_ue, f_hz, obstacles):
+    """Version « grille » de canal_direct : un coefficient h_d par point.
+
+    Entrées : pos_bs (numpy (x, y, z)), positions_ue (tableau de forme (M, 3)),
+              f_hz (Hz), obstacles (voir est_bloque)
+    Sortie  : tableau complexe de taille M (un h_d par point de la grille)
+    """
+    return np.array([canal_direct(pos_bs, p, f_hz, obstacles) for p in positions_ue])
