@@ -17,7 +17,7 @@ def puissance_recue_dbm(p_tx_dbm, h):
     Entrées : p_tx_dbm (dBm), h (coefficient de canal complexe, ou tableau de coefficients)
     Sortie  : p_rx en dBm = p_tx_dbm + 20 * log10(|h|)
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    return p_tx_dbm + 20 * np.log10(np.abs(h))
 
 
 def bruit_dbm(bande_hz=config.BANDE_HZ, facteur_bruit_db=config.FACTEUR_BRUIT_DB):
@@ -27,7 +27,7 @@ def bruit_dbm(bande_hz=config.BANDE_HZ, facteur_bruit_db=config.FACTEUR_BRUIT_DB
     Sortie  : -174 + 10 * log10(bande_hz) + facteur_bruit_db
     Exemple : 100 MHz et 7 dB donnent -87 dBm.
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    return -174 + 10 * np.log10(bande_hz) + facteur_bruit_db
 
 
 def sinr_db(p_rx_dbm, bruit_dbm_val, interferences_dbm=None):
@@ -40,7 +40,10 @@ def sinr_db(p_rx_dbm, bruit_dbm_val, interferences_dbm=None):
     Sans interférences, SINR = p_rx_dbm - bruit_dbm_val.
     Doit fonctionner aussi avec des tableaux numpy (cartes de couverture).
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    bruit_mw = 10 ** (np.asarray(bruit_dbm_val) / 10)
+    if interferences_dbm is not None:
+        bruit_mw = bruit_mw + 10 ** (np.asarray(interferences_dbm) / 10)
+    return np.asarray(p_rx_dbm) - 10 * np.log10(bruit_mw)
 
 
 def debit_shannon(sinr_db_val, bande_hz=config.BANDE_HZ):
@@ -50,7 +53,8 @@ def debit_shannon(sinr_db_val, bande_hz=config.BANDE_HZ):
     Sortie  : B * log2(1 + SINR_linéaire) en bit/s
     Exemple : SINR = 0 dB et B = 1 MHz donnent 1e6 bit/s.
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    sinr_lin = 10 ** (np.asarray(sinr_db_val) / 10)
+    return bande_hz * np.log2(1 + sinr_lin)
 
 
 def taux_couverture(grille_sinr_db, seuil_db=config.SEUIL_COUVERTURE_DB):
@@ -59,7 +63,7 @@ def taux_couverture(grille_sinr_db, seuil_db=config.SEUIL_COUVERTURE_DB):
     Entrées : grille_sinr_db (tableau numpy de SINR en dB), seuil_db (dB)
     Sortie  : nombre entre 0 et 1 (un point est couvert si SINR >= seuil)
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    return float(np.mean(np.asarray(grille_sinr_db) >= seuil_db))
 
 
 def comparer_avec_sans_ris(grille_sans, grille_avec,
@@ -74,4 +78,13 @@ def comparer_avec_sans_ris(grille_sans, grille_avec,
         "debit_moyen_sans", "debit_moyen_avec"
     Le SINR moyen est la moyenne des valeurs en dB (à préciser dans le rapport).
     """
-    raise NotImplementedError("À écrire par Aissatou")
+    sans = np.asarray(grille_sans)
+    avec = np.asarray(grille_avec)
+    return {
+        "sinr_moyen_sans_db": float(np.mean(sans)),
+        "sinr_moyen_avec_db": float(np.mean(avec)),
+        "couverture_sans": taux_couverture(sans, seuil_db),
+        "couverture_avec": taux_couverture(avec, seuil_db),
+        "debit_moyen_sans": float(np.mean(debit_shannon(sans, bande_hz))),
+        "debit_moyen_avec": float(np.mean(debit_shannon(avec, bande_hz))),
+    }
