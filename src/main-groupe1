@@ -1,0 +1,277 @@
+"""
+main.py — Point d'entrée du projet RIS : appelle les fonctions phares de chaque module.
+
+Lancement (depuis la racine du dépôt) :
+
+    python main.py                  affiche l'état de TOUS les modules (équivaut à « etat »)
+    python main.py etat             idem : [OK], [A FAIRE] ou [ERREUR] pour chaque module
+    python main.py direct           teste canal_direct.py       (Aroung)
+    python main.py ris              teste canal_ris.py          (Tsala)
+    python main.py metriques        teste metriques.py          (Aissatou)
+    python main.py optimisation     teste optimisation.py       (Aroung)
+    python main.py visualisation    teste visualisation.py      (Tsala)
+    python main.py simulation       teste simulation.py         (Tsofack)
+    python main.py sensibilite      teste sensibilite.py        (Vouffo)
+    python main.py direct ris       plusieurs modules à la suite
+
+Option : --graine N  (graine des algorithmes d'optimisation, 0 par défaut)
+
+Principe :
+  - chaque module a une fonction « demo_... » ci-dessous qui appelle ses fonctions
+    principales et affiche des contrôles [OK] / [ECHEC] avec les valeurs attendues ;
+  - si une fonction n'est pas encore écrite (NotImplementedError), le main ne plante pas :
+    il affiche [A FAIRE] avec le fichier et la fonction concernés, et passe au module suivant ;
+  - pour AJOUTER un test : ajouter des lignes controle(...) dans la demo du module.
+"""
+import argparse
+import os
+import sys
+import traceback
+
+import numpy as np
+
+from src import config
+
+RACINE = os.path.dirname(os.path.abspath(__file__))
+_ECHECS = []        # contrôles échoués pendant la démo en cours
+
+
+# ============================================================================
+# Outils d'affichage
+# ============================================================================
+def controle(libelle, condition, detail=""):
+    """Affiche [OK] ou [ECHEC] pour une vérification, et mémorise les échecs."""
+    etat = "OK   " if condition else "ECHEC"
+    suite = f"  ->  {detail}" if detail else ""
+    print(f"  [{etat}] {libelle}{suite}")
+    if not condition:
+        _ECHECS.append(libelle)
+
+
+def info(texte):
+    print(f"         {texte}")
+
+
+def _chemin_fig(nom):
+    return os.path.join(RACINE, "figures", nom)
+
+
+def _utilisateur_test():
+    """Un utilisateur dans l'ombre de l'immeuble (même point pour toutes les démos)."""
+    return np.array([40.0, 0.0, config.HAUTEUR_UE])
+
+
+def _elements_ris():
+    from src import canal_ris
+    return canal_ris.positions_elements(config.POS_RIS, config.N_X, config.N_Y,
+                                        config.PAS_ELEMENTS)
+
+
+# ============================================================================
+# Démos : une par module (modifier ou compléter ici pour tester d'autres cas)
+# ============================================================================
+def demo_direct(graine):
+    from src import canal_direct as cd
+    pl1 = cd.perte_espace_libre(config.F_HZ, 1.0)
+    pl10 = cd.perte_espace_libre(config.F_HZ, 10.0)
+    controle("perte à 1 m, 39 GHz (attendu : environ 64,26 dB)", abs(pl1 - 64.26) < 0.2, f"{pl1:.2f} dB")
+    controle("perte : +20 dB par décade de distance", abs(pl10 - pl1 - 20.0) < 1e-6, f"{pl10 - pl1:.2f} dB")
+
+    derriere = np.array([50.0, 0.0, config.HAUTEUR_UE])
+    visible = np.array([50.0, 40.0, config.HAUTEUR_UE])
+    controle("trajet derrière l'immeuble : bloqué", bool(cd.est_bloque(config.POS_BS, derriere, config.OBSTACLES)))
+    controle("trajet dégagé : non bloqué", not bool(cd.est_bloque(config.POS_BS, visible, config.OBSTACLES)))
+    controle("atténuation de blocage", cd.attenuation_blocage(True) == config.ATTENUATION_BLOCAGE_DB
+             and cd.attenuation_blocage(False) == 0.0)
+
+    h_bloque = cd.canal_direct(config.POS_BS, derriere, config.F_HZ, config.OBSTACLES)
+    h_libre = cd.canal_direct(config.POS_BS, derriere, config.F_HZ, [])
+    controle("h_d est un nombre complexe d'amplitude < 1", np.iscomplexobj(h_bloque) and abs(h_bloque) < 1,
+             f"|h_d| = {20 * np.log10(abs(h_bloque)):.1f} dB")
+    controle("le blocage ajoute 30 dB de perte",
+             abs(20 * np.log10(abs(h_libre) / abs(h_bloque)) - config.ATTENUATION_BLOCAGE_DB) < 1e-6)
+
+
+def demo_ris(graine):
+    from src import canal_ris as cr
+    ue = _utilisateur_test()
+    n = config.N_ELEMENTS
+    el = _elements_ris()
+    controle(f"positions des éléments : forme ({n}, 3)", el.shape == (n, 3), f"forme {el.shape}")
+    g = cr.canal_bs_ris(config.POS_BS, el, config.F_HZ)
+    h_r = cr.canal_ris_ue(el, ue, config.F_HZ)
+    controle("g et h_r : vecteurs complexes de taille N",
+             g.shape == (n,) and h_r.shape == (n,) and np.iscomplexobj(g) and np.iscomplexobj(h_r))
+    theta = cr.matrice_reflexion(np.zeros(n))
+    controle("matrice de réflexion : N x N diagonale", theta.shape == (n, n) and np.allclose(theta, np.diag(np.diag(theta))))
+    # h_d = 0 pour isoler le test du module canal_ris
+    h = cr.canal_total(0j, h_r, g, np.zeros(n))
+    controle("canal_total (phases nulles) = somme des h_r * g", abs(h - np.sum(h_r * g)) < 1e-15,
+             f"|h| = {20 * np.log10(abs(h)):.1f} dB")
+
+
+def demo_metriques(graine):
+    from src import metriques as m
+    controle("puissance reçue : 30 dBm et |h| = 1e-3 donnent -30 dBm", abs(m.puissance_recue_dbm(30.0, 1e-3) + 30.0) < 1e-9)
+    controle("bruit à 100 MHz et 7 dB : -87 dBm", abs(m.bruit_dbm(100e6, 7.0) + 87.0) < 0.05)
+    controle("SINR sans interférences : 27 dB", abs(m.sinr_db(-60.0, -87.0) - 27.0) < 1e-9)
+    baisse = m.sinr_db(-60.0, -87.0) - m.sinr_db(-60.0, -87.0, interferences_dbm=-87.0)
+    controle("interférences égales au bruit : -3 dB", abs(baisse - 3.01) < 0.01, f"{baisse:.2f} dB")
+    controle("SINR accepte un tableau", np.shape(m.sinr_db(np.array([[-60.0, -70.0], [-80.0, -90.0]]), -87.0)) == (2, 2))
+    controle("débit de Shannon : 0 dB et 1 MHz donnent 1e6 bit/s", abs(m.debit_shannon(0.0, 1e6) - 1e6) < 1e-6)
+    controle("taux de couverture : [0, 5, 10, 15] et seuil 10 dB donnent 0,5",
+             abs(m.taux_couverture(np.array([[0.0, 5.0], [10.0, 15.0]]), 10.0) - 0.5) < 1e-12)
+    res = m.comparer_avec_sans_ris(np.full((5, 5), 0.0), np.full((5, 5), 20.0), 10.0, 1e6)
+    cles = ["sinr_moyen_sans_db", "sinr_moyen_avec_db", "couverture_sans", "couverture_avec",
+            "debit_moyen_sans", "debit_moyen_avec"]
+    controle("comparer_avec_sans_ris : clés et sens corrects",
+             all(c in res for c in cles) and res["sinr_moyen_avec_db"] > res["sinr_moyen_sans_db"]
+             and res["couverture_avec"] > res["couverture_sans"])
+
+
+def demo_optimisation(graine):
+    from src import canal_direct as cd, canal_ris as cr, optimisation as o
+    ue = _utilisateur_test()
+    el = _elements_ris()
+    h_d = cd.canal_direct(config.POS_BS, ue, config.F_HZ, config.OBSTACLES)
+    g = cr.canal_bs_ris(config.POS_BS, el, config.F_HZ)
+    h_r = cr.canal_ris_ue(el, ue, config.F_HZ)
+
+    theta = o.phases_analytiques(h_d, h_r, g)
+    controle("phases analytiques dans [0, 2*pi[", theta.min() >= 0 and theta.max() < 2 * np.pi)
+    h = cr.canal_total(h_d, h_r, g, theta)
+    attendu = abs(h_d) + np.sum(np.abs(h_r * g))
+    controle("phases analytiques : les amplitudes s'additionnent", abs(abs(h) - attendu) / attendu < 1e-9)
+
+    sans = o.fonction_objectif(np.zeros(len(g)), h_d, 0 * h_r, g)
+    ana = o.fonction_objectif(theta, h_d, h_r, g)
+    controle("le RIS optimal améliore le SINR", ana >= sans, f"sans RIS {sans:.1f} dB, analytique {ana:.1f} dB")
+
+    for bits in (2, 1):
+        q = o.quantifier_phases(theta, bits)
+        pas = 2 * np.pi / 2 ** bits
+        controle(f"quantification {bits} bit(s) : niveaux permis", np.allclose(q / pas, np.round(q / pas), atol=1e-9))
+        info(f"SINR avec {bits} bit(s) : {o.fonction_objectif(q, h_d, h_r, g):.1f} dB")
+
+    for nom, algo in (("génétique", o.optimiser_genetique), ("PSO", o.optimiser_pso)):
+        try:
+            phases, historique = algo(h_d, h_r, g, n_iterations=100, graine=graine)
+        except NotImplementedError:
+            info(f"{nom} : pas encore écrit (optionnel pour le PSO)")
+            if nom == "génétique":
+                raise
+            continue
+        score = o.fonction_objectif(phases, h_d, h_r, g)
+        controle(f"{nom} : à moins de 1 dB de la solution analytique", ana - score < 1.0,
+                 f"{score:.1f} dB (écart {ana - score:.2f} dB)")
+        controle(f"{nom} : historique de convergence", len(historique) > 0)
+
+
+def demo_visualisation(graine):
+    from src import visualisation as v
+    x_vals = np.arange(config.ZONE["x_min"], config.ZONE["x_max"] + 1e-9, config.ZONE["pas"])
+    y_vals = np.arange(config.ZONE["y_min"], config.ZONE["y_max"] + 1e-9, config.ZONE["pas"])
+    X, Y = np.meshgrid(x_vals, y_vals)
+    grille = 40.0 - 0.5 * np.hypot(X - config.POS_BS[0], Y - config.POS_BS[1])     # SINR factice
+    f1, f2, f3 = (_chemin_fig(n) for n in ("test_carte.png", "test_comparaison.png", "test_courbe.png"))
+    v.carte_sinr(grille, x_vals, y_vals, config.POS_BS, config.POS_RIS, config.OBSTACLES, "Test carte SINR", f1)
+    controle("carte_sinr : figure enregistrée dans figures/", os.path.exists(f1))
+    v.carte_comparaison(grille - 10, grille, x_vals, y_vals, config.POS_BS, config.POS_RIS, config.OBSTACLES, f2)
+    controle("carte_comparaison : figure enregistrée", os.path.exists(f2))
+    v.tracer_courbe([1, 2, 3], [1.0, 4.0, 9.0], "Test courbe", "x (unité)", "y (unité)", f3)
+    controle("tracer_courbe : figure enregistrée", os.path.exists(f3))
+
+
+def demo_simulation(graine):
+    from src import simulation as sim
+    s = sim.construire_scenario()
+    cles = ["pos_bs", "pos_ris", "obstacles", "f_hz", "x_vals", "y_vals", "hauteur_ue", "pos_elements"]
+    controle("construire_scenario : clés attendues", all(c in s for c in cles))
+    forme = (len(s["y_vals"]), len(s["x_vals"]))
+    sans = sim.simuler_grille(s)
+    ana = sim.simuler_grille(s, "analytique")
+    controle(f"simuler_grille : tableau de forme {forme}", np.shape(sans) == forme and np.shape(ana) == forme)
+    controle("RIS optimal : jamais pire que sans RIS", bool(np.all(ana >= sans - 1e-9)),
+             f"SINR moyen {np.mean(sans):.1f} dB sans RIS, {np.mean(ana):.1f} dB avec")
+    res = sim.lancer_comparaison(s)
+    controle("lancer_comparaison : dictionnaire de résultats", isinstance(res, dict) and len(res) > 0)
+    for cle, val in res.items():
+        info(f"{cle} = {val:.3g}")
+
+
+def demo_sensibilite(graine):
+    from src import sensibilite as se
+    n_vals, sinr = se.etude_nb_elements((16, 64, 256))
+    controle("étude du nombre d'éléments : le SINR augmente avec N", bool(np.all(np.diff(sinr) > 0)),
+             f"SINR moyens : {np.round(sinr, 1)} dB")
+    controle("figure enregistrée", os.path.exists(_chemin_fig("sensibilite_nb_elements.png")))
+    bits, s_bits = se.etude_resolution_phases((None, 2, 1))
+    controle("étude de la résolution : continu >= 2 bits >= 1 bit",
+             s_bits[0] >= s_bits[1] >= s_bits[2], f"SINR : {np.round(s_bits, 1)} dB")
+    positions = [config.POS_RIS, config.POS_RIS + np.array([0.0, -10.0, 0.0]), config.POS_RIS + np.array([5.0, 10.0, 0.0])]
+    _, couvertures = se.etude_position_ris(positions)
+    controle("étude de la position : couvertures comprises entre 0 et 1",
+             all(0.0 <= c <= 1.0 for c in couvertures), f"couvertures : {np.round(couvertures, 2)}")
+    res = se.etude_nb_utilisateurs((1, 3))
+    controle("étude du nombre d'utilisateurs : résultats renvoyés", res is not None)
+
+
+# ============================================================================
+# Moteur d'exécution
+# ============================================================================
+MODULES = {                      # clé : (fichier testé, responsable, démo)
+    "direct":        ("canal_direct.py",  "Aroung",   demo_direct),
+    "ris":           ("canal_ris.py",     "Tsala",    demo_ris),
+    "metriques":     ("metriques.py",     "Aissatou", demo_metriques),
+    "optimisation":  ("optimisation.py",  "Aroung",   demo_optimisation),
+    "visualisation": ("visualisation.py", "Tsala",    demo_visualisation),
+    "simulation":    ("simulation.py",    "Tsofack",  demo_simulation),
+    "sensibilite":   ("sensibilite.py",   "Vouffo",   demo_sensibilite),
+}
+
+
+def executer(cle, graine):
+    """Lance la démo d'un module et renvoie 'ok', 'a_faire' ou 'erreur'."""
+    fichier, responsable, demo = MODULES[cle]
+    print(f"\n=== {cle} : {fichier} ({responsable}) ===")
+    _ECHECS.clear()
+    try:
+        demo(graine)
+    except NotImplementedError as e:
+        trace = traceback.extract_tb(e.__traceback__)[-1]
+        print(f"  [A FAIRE] fonction pas encore écrite : {os.path.basename(trace.filename)} / {trace.name}  ({e})")
+        return "a_faire"
+    except Exception:
+        print("  [ERREUR] la démo a planté (vérifier la fonction concernée) :")
+        traceback.print_exc(limit=-3)
+        return "erreur"
+    return "erreur" if _ECHECS else "ok"
+
+
+def main(argv=None):
+    parseur = argparse.ArgumentParser(description="Teste les fonctions phares de chaque module du projet RIS.")
+    parseur.add_argument("commande", nargs="*", default=["etat"],
+                         help="etat, ou un ou plusieurs modules : " + ", ".join(MODULES))
+    parseur.add_argument("--graine", type=int, default=0, help="graine des algorithmes d'optimisation")
+    args = parseur.parse_args(argv)
+
+    a_lancer = list(MODULES) if "etat" in args.commande else args.commande
+    inconnus = [c for c in a_lancer if c not in MODULES]
+    if inconnus:
+        parseur.error(f"module inconnu : {', '.join(inconnus)} (choix : etat, {', '.join(MODULES)})")
+
+    statuts = {cle: executer(cle, args.graine) for cle in a_lancer}
+
+    libelles = {"ok": "[OK]", "a_faire": "[A FAIRE]", "erreur": "[ERREUR]"}
+    print("\n" + "=" * 60 + "\nRÉSUMÉ")
+    for cle, st in statuts.items():
+        print(f"  {cle:14s} {libelles[st]:10s} {MODULES[cle][0]} ({MODULES[cle][1]})")
+    return 1 if "erreur" in statuts.values() else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")     # accents corrects dans PowerShell
+    except Exception:
+        pass
+    sys.exit(main())
